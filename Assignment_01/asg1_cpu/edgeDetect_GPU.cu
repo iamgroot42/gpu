@@ -5,14 +5,6 @@
 #include <IL/ilu.h>
 
 
-__global__ void VecMul(float *p, float *q, float *r){
-	int i = (blockIdx.x * blockDim.x) + threadIdx.x;
-	int j = (blockIdx.y * blockDim.y) + threadIdx.y;
-	int k;
-	for(k = 0; k < blockDim.x ;k++){
-		r[i * blockDim.x + j] += p[i*blockDim.x+k]*q[k*blockDim.x+j];
-	}
-}
 
 __global__ void edgeMap(unsigned char* edgemap, unsigned char* bitmap, int width, int height){
 	int i = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -42,13 +34,24 @@ __global__ void edgeMap(unsigned char* edgemap, unsigned char* bitmap, int width
 			(Prewitt_y[3]*(int)bitmap[ml]) + (Prewitt_y[4]*(int)bitmap[mm]) + (Prewitt_y[5] * (int)bitmap[mr]) + 
 			(Prewitt_y[6]*(int)bitmap[bl]) + (Prewitt_y[7]*(int)bitmap[bm]) + (Prewitt_y[8] * (int)bitmap[br]);
 
-			val = (int)ceil(sqrt((grad_x*grad_x) + (grad_y*grad_y)));
+			val = (int)ceil(sqrt((float)((grad_x*grad_x) + (grad_y*grad_y))));
 
 			edgemap[mm] = val;
 		}
-	}			
+	}
 }
 
+__global__ void normalizeEdgemap(unsigned char* edgemap, int maxgrad, int mingrad, int width, int height){
+	int i = (blockIdx.x * blockDim.x) + threadIdx.x;
+	int j = (blockIdx.y * blockDim.y) + threadIdx.y;
+
+	float pixval;
+
+	if(i < height && j < width){
+		pixval = (float)(edgemap[width*i + j] - mingrad)/(float)(maxgrad - mingrad);
+		edgemap[width*i + j] = (unsigned char)ceil(pixval*256.0f);
+	}
+}
 
 void saveImage(const char* filename, int width, int height, unsigned char * bitmap)
 {
@@ -81,46 +84,43 @@ int main()
 	int width, height;
 
 	unsigned char *image, *edgemap;
-	unsigned char* cuda_img, *cuda_edgemap;
+	unsigned char *cuda_img, *cuda_edgemap;
 
 	ilInit();
 
 	ILuint image_id = loadImage("./images/wall256.png", &image, width, height);
+
+	edgemap = (unsigned char*)malloc(width * height);
+
 	if(image_id == 0) {fprintf(stderr, "Error while reading image... aborting.\n"); exit(0);}
 
 	cudaMalloc((void**) &cuda_img, width * height);
 	cudaMalloc((void**) &cuda_edgemap, width * height);
 
-    cudaMemcpy(cuda_img, image, width * height, cudaMemcpyHostToDevice);
+	cudaMemcpy(cuda_img, image, width * height, cudaMemcpyHostToDevice);
 	cudaMemset(cuda_edgemap, 0, width * height);
 
 	dim3 threadsPerBlock(width, height);
 	dim3 numBlocks(1);
-    edgeMap<<<numBlocks, threadsPerBlock>>>(cuda_edgemap, cuda_img, width, height);
 
-    cudaMemcpy(edgemap, cuda_edgemap, width * height, cudaMemcpyDeviceToHost);
+	// Compute edgemap
+	edgeMap<<<numBlocks, threadsPerBlock>>>(cuda_edgemap, cuda_img, width, height);
+	// Find min and max pixel values over the edgemap
+	// TODO
+	// Find min and max pixel values over the edgemap
+	normalizeEdgemap<<<numBlocks, threadsPerBlock>>>(cuda_edgemap, maxgrad, mingrad, width, height);
+	cudaMemcpy(edgemap, cuda_edgemap, width * height, cudaMemcpyDeviceToHost);
 
-    cudaFree(cuda_img);
-    cudaFree(cuda_edgemap);
+	cudaFree(cuda_img);
+	cudaFree(cuda_edgemap);
 
-    free(image);
-    free(edgemap);
+	// free(image);
+	// free(edgemap);
 
-    saveImage("./ohho.png", width, height, edgemap);
+	saveImage("./ohho.png", width, height, edgemap);
 
-    ilBindImage(0);
+	ilBindImage(0);
 	ilDeleteImage(image_id);
 
 	return 0;
 }
-
-
-// void edgeDetectCPU(int width, int height, unsigned char * bitmap, unsigned char ** edgemap)
-// {
-// 	// Normalization between 0-256
-// 	for (int i = 0; i < width*height; ++i)
-// 	{
-// 		pixval = (float)(tempmap[i]-mingrad)/(float)(maxgrad-mingrad);
-// 		*(*edgemap + i) = (unsigned char)ceil(pixval*256.0f);
-// 	}
-// }
