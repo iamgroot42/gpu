@@ -4,8 +4,10 @@
 #include <IL/il.h>
 #include <IL/ilu.h>
 
+// Reference for texture API from Nvidia's Official Documentation:
+// http://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#texture-and-surface-memory
 
-__global__ void edgeMap(unsigned char* edgemap, unsigned char* bitmap, int width, int height){
+__global__ void edgeMap(unsigned char* edgemap, cudaTextureObject_t bitmap , int width, int height){
 	int i = (blockIdx.x * blockDim.x) + threadIdx.x;
 	int j = (blockIdx.y * blockDim.y) + threadIdx.y;
 
@@ -21,17 +23,23 @@ __global__ void edgeMap(unsigned char* edgemap, unsigned char* bitmap, int width
 			edgemap[width*i + j] = 0;
 		else
 		{
-			tl = width*(i-1) + (j-1), tm = width*i+(j-1), tr = width*(i+1) + (j-1); 
-			ml = width*(i-1) + j, mm = width*i+j, mr = width*(i+1) + j; 
-			bl = width*(i-1) + (j+1), bm = width*i+(j+1), br = width*(i+1) + (j+1); 
+			tl = tex2D<int>(bitmap, width*(i-1), j-1);
+			tm = tex2D<int>(bitmap, width*i, j-1);
+			tr = tex2D<int>(bitmap, width*(i+1), j-1);
+			ml = tex2D<int>(bitmap, width*(i-1), j);
+			mm = tex2D<int>(bitmap, width*i, j);
+			mr = tex2D<int>(bitmap, width*(i+1), j);
+			bl = tex2D<int>(bitmap, width*(i-1), j+1);
+			bm = tex2D<int>(bitmap, width*i, j+1);
+			br = tex2D<int>(bitmap, width*(i+1), j+1);
 				
-			grad_x = (Prewitt_x[0]*(int)bitmap[tl]) + (Prewitt_x[1]*(int)bitmap[tm]) + (Prewitt_x[2] * (int)bitmap[tr]) + 
-			(Prewitt_x[3]*(int)bitmap[ml]) + (Prewitt_x[4]*(int)bitmap[mm]) + (Prewitt_x[5] * (int)bitmap[mr]) + 
-			(Prewitt_x[6]*(int)bitmap[bl]) + (Prewitt_x[7]*(int)bitmap[bm]) + (Prewitt_x[8] * (int)bitmap[br]);
+			grad_x = (Prewitt_x[0]*tl) + (Prewitt_x[1]*tm) + (Prewitt_x[2]*tr) + 
+			(Prewitt_x[3]*ml) + (Prewitt_x[4]*mm) + (Prewitt_x[5]*mr) + 
+			(Prewitt_x[6]*bl) + (Prewitt_x[7]*bm) + (Prewitt_x[8] * br);
 
-			grad_y = (Prewitt_y[0]*(int)bitmap[tl]) + (Prewitt_y[1]*(int)bitmap[tm]) + (Prewitt_y[2] * (int)bitmap[tr]) + 
-			(Prewitt_y[3]*(int)bitmap[ml]) + (Prewitt_y[4]*(int)bitmap[mm]) + (Prewitt_y[5] * (int)bitmap[mr]) + 
-			(Prewitt_y[6]*(int)bitmap[bl]) + (Prewitt_y[7]*(int)bitmap[bm]) + (Prewitt_y[8] * (int)bitmap[br]);
+			grad_y = (Prewitt_y[0]*tl) + (Prewitt_y[1]*tm) + (Prewitt_y[2]*tr) + 
+			(Prewitt_y[3]*ml) + (Prewitt_y[4]*mm) + (Prewitt_y[5] * mr) + 
+			(Prewitt_y[6]*bl) + (Prewitt_y[7]*bm) + (Prewitt_y[8] * br);
 
 			val = (int)ceil(sqrt((float)((grad_x*grad_x) + (grad_y*grad_y))));
 
@@ -83,7 +91,7 @@ int main()
 	int width, height;
 
 	unsigned char *image, *edgemap;
-	unsigned char *cuda_img, *cuda_edgemap;
+	unsigned char *cuda_edgemap;
 
 	ilInit();
 
@@ -93,24 +101,46 @@ int main()
 
 	if(image_id == 0) {fprintf(stderr, "Error while reading image... aborting.\n"); exit(0);}
 
-	cudaMalloc((void**) &cuda_img, width * height);
 	cudaMalloc((void**) &cuda_edgemap, width * height);
 
-	cudaMemcpy(cuda_img, image, width * height, cudaMemcpyHostToDevice);
 	cudaMemset(cuda_edgemap, 0, width * height);
 
 	dim3 threadsPerBlock(width, height);
 	dim3 numBlocks(1);
 
+	// Texture memory
+	cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindUnsigned);
+	cudaArray* cuda_bitmap;
+	cudaMallocArray(&cuda_bitmap, &channelDesc, width, height);
+	cudaMemcpyToArray(cuda_bitmap, 0, 0, image, width * height, cudaMemcpyHostToDevice);
+
+	struct cudaResourceDesc resDesc;
+	memset(&resDesc, 0, sizeof(resDesc));
+	resDesc.resType = cudaResourceTypeArray;
+	resDesc.res.array.array = cuda_bitmap;
+
+	struct cudaTextureDesc texDesc;
+	memset(&texDesc, 0, sizeof(texDesc));
+	texDesc.addressMode[0] = cudaAddressModeWrap;
+	texDesc.addressMode[1] = cudaAddressModeWrap;
+	texDesc.filterMode = cudaFilterModeLinear;
+	texDesc.readMode = cudaReadModeElementType;
+	texDesc.normalizedCoords = 0;
+
+	cudaTextureObject_t texObj = 0;
+	cudaCreateTextureObject(&texObj, &resDesc, &texDesc, NULL);
+
 	// Compute edgemap
-	edgeMap<<<numBlocks, threadsPerBlock>>>(cuda_edgemap, cuda_img, width, height);
+	edgeMap<<<numBlocks, threadsPerBlock>>>(cuda_edgemap, texObj, width, height);
 	// Find min and max pixel values over the edgemap
 	// TODO
 	// Find min and max pixel values over the edgemap
 	normalizeEdgemap<<<numBlocks, threadsPerBlock>>>(cuda_edgemap, maxgrad, mingrad, width, height);
 	cudaMemcpy(edgemap, cuda_edgemap, width * height, cudaMemcpyDeviceToHost);
 
-	cudaFree(cuda_img);
+	cudaDestroyTextureObject(texObj);
+	cudaFreeArray(cuda_bitmap);
+
 	cudaFree(cuda_edgemap);
 
 	free(edgemap);
