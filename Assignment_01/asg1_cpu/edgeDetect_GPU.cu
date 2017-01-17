@@ -40,6 +40,23 @@ __global__ void edgeMap(unsigned char* edgemap, unsigned char* bitmap, int width
 	}
 }
 
+__global__ void minmaxReduce(unsigned char* flat_edgemap, unsigned char* mingrad, unsigned char* maxgrad){
+	extern __shared__ int reduce_mem_min[], reduce_mem_max[];
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	reduce_mem_min[threadIdx.x] = flat_edgemap[i];
+	reduce_mem_max[threadIdx.x] = flat_edgemap[i];
+	__syncthreads();
+	for (unsigned int s=blockDim.x/2; s>0; s/=2) {
+		if (threadIdx.x < s) {
+			reduce_mem_max[threadIdx.x] = max(reduce_mem_max[threadIdx.x], reduce_mem_max[threadIdx.x + s]);
+			reduce_mem_min[threadIdx.x] = min(reduce_mem_min[threadIdx.x], reduce_mem_min[threadIdx.x + s]);
+		}
+		__syncthreads();
+	}
+	atomicMax(maxgrad, reduce_mem_max[0]);
+	atomicMin(mingrad, reduce_mem_min[0]);
+}
+
 __global__ void normalizeEdgemap(unsigned char* edgemap, int maxgrad, int mingrad, int width, int height){
 	int i = (blockIdx.x * blockDim.x) + threadIdx.x;
 	int j = (blockIdx.y * blockDim.y) + threadIdx.y;
@@ -83,7 +100,9 @@ int main()
 	int width, height;
 
 	unsigned char *image, *edgemap;
+	unsigned char min_grad, max_grad;
 	unsigned char *cuda_img, *cuda_edgemap;
+	unsigned char *cuda_mingrad, *cuda_maxgrad;
 
 	ilInit();
 
@@ -95,24 +114,45 @@ int main()
 
 	cudaMalloc((void**) &cuda_img, width * height);
 	cudaMalloc((void**) &cuda_edgemap, width * height);
+	cudaMalloc((void**) &cuda_mingrad, 1);
+	cudaMalloc((void**) &cuda_maxgrad, 1);
 
 	cudaMemcpy(cuda_img, image, width * height, cudaMemcpyHostToDevice);
 	cudaMemset(cuda_edgemap, 0, width * height);
+	cudaMemset(cuda_mingrad, 0, 1);
+	cudaMemset(cuda_maxgrad, 0, 1);
 
-	dim3 threadsPerBlock(width/32, height/32);
-	dim3 numBlocks(32, 32);
+	int block_dim = 32;
+	dim3 threadsPerBlock(width/block_dim, height/block_dim);
+	dim3 numBlocks(block_dim, block_dim);
+
+	dim3 threadsPerBlock_red((width*height)/(block_dim*block_dim));
+	dim3 numBlocks_red(block_dim* block_dim);
+
 
 	// Compute edgemap
 	edgeMap<<<numBlocks, threadsPerBlock>>>(cuda_edgemap, cuda_img, width, height);
 	// Find min and max pixel values over the edgemap
-	// TODO
+	minmaxReduce<<<numBlocks_red, threadsPerBlock_red>>>(cuda_edgemap, cuda_mingrad, cuda_maxgrad);
 	// Find min and max pixel values over the edgemap
-	normalizeEdgemap<<<numBlocks, threadsPerBlock>>>(cuda_edgemap, maxgrad, mingrad, width, height);
+	// normalizeEdgemap<<<numBlocks, threadsPerBlock>>>(cuda_edgemap, maxgrad, mingrad, width, height);
 	cudaMemcpy(edgemap, cuda_edgemap, width * height, cudaMemcpyDeviceToHost);
+	cudaMemcpy(&min_grad, cuda_mingrad, 1, cudaMemcpyDeviceToHost);
+	cudaMemcpy(&max_grad, cuda_maxgrad, 1, cudaMemcpyDeviceToHost);
 
 	cudaFree(cuda_img);
 	cudaFree(cuda_edgemap);
 
+	printf("Max: %d\nMin: %d\n",max_grad,min_grad);
+	int i,j;
+	int maxx=99999,minn=-1;
+	for(i=0;i<width;i++){
+		for(j=0;j<height;j++){
+			if(edgemap[i*width + j]<minn) minn=edgemap[i*width + j];
+			if(edgemap[i*width + j]<maxx) maxx=edgemap[i*width + j];
+		}
+	}
+	printf("Max: %d\nMin: %d\n",maxx,minn);
 	free(edgemap);
 
 	saveImage("./ohho.png", width, height, edgemap);
