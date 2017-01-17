@@ -105,8 +105,8 @@ int main()
 
 	cudaMemset(cuda_edgemap, 0, width * height);
 
-	dim3 threadsPerBlock(width, height);
-	dim3 numBlocks(1);
+	dim3 threadsPerBlock(width/32, height/32);
+	dim3 numBlocks(32, 32);
 
 	// Texture memory
 	cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindUnsigned);

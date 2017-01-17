@@ -99,8 +99,8 @@ int main()
 	cudaMemcpy(cuda_img, image, width * height, cudaMemcpyHostToDevice);
 	cudaMemset(cuda_edgemap, 0, width * height);
 
-	dim3 threadsPerBlock(width, height);
-	dim3 numBlocks(1);
+	dim3 threadsPerBlock(width/32, height/32);
+	dim3 numBlocks(32, 32);
 
 	// Compute edgemap
 	edgeMap<<<numBlocks, threadsPerBlock>>>(cuda_edgemap, cuda_img, width, height);
