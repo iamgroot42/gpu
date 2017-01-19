@@ -36,7 +36,7 @@ __global__ void edgeMap(unsigned char* edgemap, unsigned char* bitmap, int width
 	/* Prewitt operators' values used as it is, as storing it in an array implies
 	use of local memory, which is slow to access. */
 
-	int tl, tm, tr, ml, mm, mr, bl, bm, br;
+	int tl, tm, tr, ml, mr, bl, bm, br;
 	unsigned char val;
 	int grad_x, grad_y;
 
@@ -45,20 +45,19 @@ __global__ void edgeMap(unsigned char* edgemap, unsigned char* bitmap, int width
 	else
 	{
 		tl = width*(i-1) + (j-1), tm = width*i+(j-1), tr = width*(i+1) + (j-1); 
-		ml = width*(i-1) + j, mm = width*i+j, mr = width*(i+1) + j; 
+		ml = width*(i-1) + j, mr = width*(i+1) + j; 
 		bl = width*(i-1) + (j+1), bm = width*i+(j+1), br = width*(i+1) + (j+1); 
 				
-		grad_x = (-1*(int)bitmap[tl]) + (0*(int)bitmap[tm]) + (1*(int)bitmap[tr]) + 
-		(-1*(int)bitmap[ml]) + (0*(int)bitmap[mm]) + (1*(int)bitmap[mr]) + 
-		(-1*(int)bitmap[bl]) + (0*(int)bitmap[bm]) + (1*(int)bitmap[br]);
+		grad_x = (-1*(int)bitmap[tl]) + (1*(int)bitmap[tr]) + 
+		(-1*(int)bitmap[ml]) + (1*(int)bitmap[mr]) + 
+		(-1*(int)bitmap[bl]) + (1*(int)bitmap[br]);
 
 		grad_y = (1*(int)bitmap[tl]) + (1*(int)bitmap[tm]) + (1*(int)bitmap[tr]) + 
-		(0*(int)bitmap[ml]) + (0*(int)bitmap[mm]) + (0*(int)bitmap[mr]) + 
 		(-1*(int)bitmap[bl]) + (-1*(int)bitmap[bm]) + (-1*(int)bitmap[br]);
 
 		val = (int)ceil(sqrt((float)((grad_x*grad_x) + (grad_y*grad_y))));
 
-		edgemap[mm] = val;
+		edgemap[width*i+j] = val;
 	}
 }
 
@@ -69,8 +68,7 @@ __global__ void normalizeEdgemap(unsigned char* edgemap, int maxgrad, int mingra
 	float pixval;
 
 	pixval = (float)(edgemap[width*i + j] - mingrad)/(float)(maxgrad - mingrad);
-	edgemap[width*i + j] = (unsigned char)ceil(pixval*256.0f);
-	
+	edgemap[width*i + j] = (unsigned char)ceil(pixval*256.0f);	
 }
 
 void saveImage(const char* filename, int width, int height, unsigned char * bitmap)
@@ -143,6 +141,8 @@ int main()
 	normalizeEdgemap<<<numBlocks, threadsPerBlock>>>(cuda_edgemap, max_grad[0], min_grad[0], width, height);
 	cudaMemcpy(edgemap, cuda_edgemap, width * height, cudaMemcpyDeviceToHost);
 
+	saveImage("./ohho.png", width, height, edgemap);
+	
 	cudaFree(cuda_img);
 	cudaFree(cuda_edgemap);
 	cudaFree(cuda_mingrad);
@@ -151,8 +151,6 @@ int main()
 	free(edgemap);
 	free(max_grad);
 	free(min_grad);
-
-	saveImage("./ohho.png", width, height, edgemap);
 
 	ilBindImage(0);
 	ilDeleteImage(image_id);
