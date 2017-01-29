@@ -13,6 +13,7 @@
 
 __global__ void matchPattern(unsigned int *text, unsigned int *words, int *matches, int length){
 
+	__shared__ unsigned int shared_words[CHUNKSIZE+1];
 	__shared__ unsigned int data_chunk[CHUNKSIZE][4];
 	__shared__ unsigned int keywords[CHUNKSIZE];
 	unsigned int word, next_word;
@@ -20,19 +21,25 @@ __global__ void matchPattern(unsigned int *text, unsigned int *words, int *match
 	int i = (blockIdx.x * blockDim.x) + threadIdx.x;
 	int match_count = 0;
 
-	// Load keywords
-	if(threadIdx.x==0){
-		keywords[threadIdx.y] = words[threadIdx.y];
-	}
-	__syncthreads();
-
 	if(i<length){
+		// Load keywords
+		if(threadIdx.x==0){
+			keywords[threadIdx.y] = words[threadIdx.y];
+		}
+		__syncthreads();
+
+		if(threadIdx.y==0){
+			shared_words[threadIdx.x] = text[i];
+			if(threadIdx.x+1==CHUNKSIZE){
+				shared_words[CHUNKSIZE] = text[i+1];
+			}
+		}
+		__syncthreads();
+
 		// Load text
 		if(threadIdx.y==0){
-				word = text[i];
-				next_word = text[i+1];
-			// word = 5;
-			// next_word = 5;
+			word = shared_words[threadIdx.x];
+			next_word = shared_words[threadIdx.x+1];
 			data_chunk[threadIdx.x][0] = word;
 			data_chunk[threadIdx.x][1] = (word>>8) + (next_word<<24);
 			data_chunk[threadIdx.x][2] = (word>>16) + (next_word<<16);
@@ -49,20 +56,12 @@ __global__ void matchPattern(unsigned int *text, unsigned int *words, int *match
 	}
 }
 
-__global__ void basic(unsigned int *text, int *matches, int length){
-	int i = (blockIdx.x * blockDim.x) + threadIdx.x;
-
-	if(i<length){
-		atomicAdd(&matches[threadIdx.x], text[i]);
-	}
-}
-
 int main(){
 
 	int length, len, nwords=32, matches[nwords];
 	int* cuda_matches;
 	char *ctext, keywords[nwords][LINEWIDTH], *line;
-	line = (char*) malloc(sizeof(char)*LINEWIDTH);
+	cudaMallocHost(&line, sizeof(char)*LINEWIDTH);
 	unsigned int *text,  *words;
 	unsigned int *cuda_text, *cuda_words;
 	memset(matches, -1, sizeof(matches));
@@ -86,7 +85,7 @@ int main(){
 
 	length = 0;
 	while (getc(fp) != EOF) length++;
-	ctext = (char *) malloc(length+4);
+	cudaMallocHost(&ctext, length+4);
 
 	rewind(fp);
 
@@ -100,7 +99,7 @@ int main(){
 	text = (unsigned int *) ctext;
 
 	// define words for matching
-	words = (unsigned int *) malloc(nwords*sizeof(unsigned int));
+	cudaMallocHost(&words, nwords*sizeof(unsigned int));
 
 	for (int w=0; w<nwords; w++){
 		words[w] = ((unsigned int) keywords[w][0])
@@ -109,23 +108,24 @@ int main(){
 			+ ((unsigned int) keywords[w][3])*(1<<24);
 	}
 
-	cudaMalloc((void**) &cuda_text, sizeof(text));
-	cudaMalloc((void**) &cuda_words, sizeof(words));
+	cudaMalloc((void**) &cuda_text, length+4);
+	cudaMalloc((void**) &cuda_words, nwords*sizeof(unsigned int));
 	cudaMalloc((void**) &cuda_matches, sizeof(matches));
 
-	cudaMemcpy(cuda_text, text, sizeof(text), cudaMemcpyHostToDevice);
-	cudaMemcpy(cuda_words, words, sizeof(words), cudaMemcpyHostToDevice);
+	cudaMemcpy(cuda_text, text, length+4, cudaMemcpyHostToDevice);
+	cudaMemcpy(cuda_words, words, nwords*sizeof(unsigned int), cudaMemcpyHostToDevice);
+	cudaMemset(cuda_matches, 0, sizeof(matches));
 	cudaMemset(cuda_matches, 0, sizeof(matches));
 
 	dim3 threadsPerBlock(32, 32);
 	dim3 numBlocks(len/32);	
 
 	dim3 threadsPerBlock2(32);
-	dim3 numBlocks2(len);	
+	dim3 numBlocks2(len/32);
 
-	// matchPattern<<<numBlocks, threadsPerBlock>>>(cuda_text, cuda_words, cuda_matches, len);
+	matchPattern<<<numBlocks, threadsPerBlock>>>(cuda_text, cuda_words, cuda_matches, len);
 
-	basic<<<numBlocks2, threadsPerBlock2>>>(cuda_text, cuda_matches, len);
+	// basic<<<numBlocks2, threadsPerBlock2>>>(cuda_text, cuda_matches, len);
 
 	cudaMemcpy(matches, cuda_matches, sizeof(matches), cudaMemcpyDeviceToHost);
 
@@ -134,8 +134,9 @@ int main(){
 	for (int i = 0; i < nwords; ++i)
 		printf("%s\t  |\t%d\n", keywords[i], matches[i]);
 
-	free(ctext);
-	free(words);
+	cudaFree(ctext);
+	cudaFree(words);
+	cudaFree(line);
 	cudaFree(cuda_text);
 	cudaFree(cuda_words);
 	cudaFree(cuda_matches);
