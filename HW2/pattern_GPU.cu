@@ -10,7 +10,7 @@
 
 #define LINEWIDTH 20
 #define KEYWORD 32
-#define CHUNKSIZE 8
+#define CHUNKSIZE 4
 
 
 __global__ void matchPattern(unsigned int *text, unsigned int *words, int *matches, int length){
